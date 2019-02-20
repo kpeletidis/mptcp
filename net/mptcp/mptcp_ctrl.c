@@ -64,6 +64,7 @@ static struct kmem_cache *mptcp_cb_cache __read_mostly;
 static struct kmem_cache *mptcp_tw_cache __read_mostly;
 
 int sysctl_mptcp_enabled __read_mostly = 1;
+EXPORT_SYMBOL(sysctl_mptcp_enabled);
 int sysctl_mptcp_version __read_mostly = 0;
 static int min_mptcp_version;
 static int max_mptcp_version = 1;
@@ -1097,32 +1098,34 @@ static int mptcp_alloc_mpcb(struct sock *meta_sk, __u64 remote_key,
 
 #if IS_ENABLED(CONFIG_IPV6)
 	if (meta_icsk->icsk_af_ops == &mptcp_v6_mapped) {
+		struct tcp6_sock *master_tp6 = (struct tcp6_sock *)master_sk;
 		struct ipv6_pinfo *newnp, *np = inet6_sk(meta_sk);
 
-		inet_sk(master_sk)->pinet6 = &((struct tcp6_sock *)master_sk)->inet6;
+		inet_sk(master_sk)->pinet6 = &master_tp6->inet6;
 
 		newnp = inet6_sk(master_sk);
 		memcpy(newnp, np, sizeof(struct ipv6_pinfo));
-
-		newnp->ipv6_mc_list = NULL;
-		newnp->ipv6_ac_list = NULL;
-		newnp->ipv6_fl_list = NULL;
-		newnp->opt = NULL;
-		newnp->pktoptions = NULL;
-		(void)xchg(&newnp->rxpmtu, NULL);
 	} else if (meta_sk->sk_family == AF_INET6) {
+		struct tcp6_sock *master_tp6 = (struct tcp6_sock *)master_sk;
 		struct ipv6_pinfo *newnp, *np = inet6_sk(meta_sk);
+		struct ipv6_txoptions *opt;
 
-		inet_sk(master_sk)->pinet6 = &((struct tcp6_sock *)master_sk)->inet6;
+		inet_sk(master_sk)->pinet6 = &master_tp6->inet6;
 
+		/* The following heavily inspired from tcp_v6_syn_recv_sock() */
 		newnp = inet6_sk(master_sk);
 		memcpy(newnp, np, sizeof(struct ipv6_pinfo));
 
-		newnp->hop_limit	= -1;
-		newnp->mcast_hops	= IPV6_DEFAULT_MCASTHOPS;
-		newnp->mc_loop	= 1;
-		newnp->pmtudisc	= IPV6_PMTUDISC_WANT;
-		master_sk->sk_ipv6only = sock_net(master_sk)->ipv6.sysctl.bindv6only;
+		opt = rcu_dereference(np->opt);
+		if (opt) {
+			opt = ipv6_dup_options(master_sk, opt);
+			RCU_INIT_POINTER(newnp->opt, opt);
+		}
+		inet_csk(master_sk)->icsk_ext_hdr_len = 0;
+		if (opt)
+			inet_csk(master_sk)->icsk_ext_hdr_len = opt->opt_nflen +
+								opt->opt_flen;
+
 	}
 #endif
 
@@ -2897,7 +2900,7 @@ void __init mptcp_init(void)
 	if (mptcp_register_scheduler(&mptcp_sched_default))
 		goto register_sched_failed;
 
-	pr_info("MPTCP: Stable release v0.94.1");
+	pr_info("MPTCP: Stable release v0.94.2");
 
 	mptcp_init_failed = false;
 
